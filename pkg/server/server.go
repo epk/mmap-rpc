@@ -1,21 +1,27 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/google/uuid"
 	"github.com/tysonmote/gommap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
+	"github.com/epk/mmap-rpc/gen/api"
 	"github.com/epk/mmap-rpc/pkg/netstringconn"
 )
+
+type HandlerFunc func(ctx context.Context, data []byte) ([]byte, error)
 
 type Connection struct {
 	id       string
@@ -58,7 +64,6 @@ func (s *Server) ListenAndServe(socketPath, mmapFilePrefix string) error {
 }
 
 func (s *Server) Close() {
-	// Close all connections
 	s.connections.Range(
 		func(key, value interface{}) bool {
 			conn := value.(*Connection)
@@ -76,85 +81,87 @@ func (s *Server) handleConnection(conn net.Conn) {
 	nsConn := netstringconn.NewNetstringConn(conn)
 
 	for {
-		msg, err := nsConn.Read()
-		if err != nil {
-			// handle EOF/ closed connection
-			if errors.Is(err, net.ErrClosed) {
+		if err := s.receiveAndSend(nsConn); err != nil {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+				// Connection closed or EOF reached, exit gracefully
 				return
 			}
-
-			return
-		}
-
-		parts := strings.Split(string(msg), ",")
-
-		switch parts[0] {
-		case "CONNECT":
-			connID, mmapFilename, err := s.handleConnect()
-			if err != nil {
-				// handleConnect already logs the error
-				continue
-			}
-
-			response := fmt.Sprintf("CONNECTED,%s,%s", connID, mmapFilename)
-			if err := nsConn.Write([]byte(response)); err != nil {
-				log.Printf("[Connection ID: %s] failed to write response: %v\n", connID, err)
-			}
-		case "DISCONNECT":
-			if len(parts) != 2 {
-				log.Printf("Invalid DISCONNECT message")
+			if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+				// Client disconnected, exit gracefully
 				return
 			}
-
-			connID := parts[1]
-			s.handleDisconnect(connID)
-			if err := nsConn.Close(); err != nil {
-				log.Printf("[Connection ID: %s] failed to close connection: %v\n", connID, err)
-			}
-			// DATA,<connID>,FQMN,<read-limit>
-		case "DATA":
-			if len(parts) != 4 {
-				log.Printf("Invalid DATA message")
-				return
-			}
-
-			connID := parts[1]
-			fullyQualifiedMethodName := parts[2]
-			readLimit := parts[3]
-			readLimitInt, _ := strconv.Atoi(readLimit)
-			c, ok := s.connections.Load(connID)
-			if !ok {
-				log.Printf("[Connection ID: %s] connection not found\n", connID)
-				return
-			}
-			cc := c.(*Connection)
-
-			s.handleData(nsConn, cc, fullyQualifiedMethodName, readLimitInt)
+			log.Printf("Error handling request: %v\n", err)
+			return // Exit the loop on any error
 		}
 	}
 }
 
-func (s *Server) handleConnect() (string, string, error) {
+func (s *Server) receiveAndSend(w *netstringconn.NetstringConn) error {
+	msg, err := w.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read request: %w", err)
+	}
+
+	request := &anypb.Any{}
+	if err := proto.Unmarshal(msg, request); err != nil {
+		return fmt.Errorf("failed to unmarshal request: %w", err)
+	}
+
+	var response proto.Message
+
+	switch request.TypeUrl {
+	case "type.googleapis.com" + "/" + string(proto.MessageName(&api.ConnectRequest{})):
+		response = s.handleConnect()
+	case "type.googleapis.com" + "/" + string(proto.MessageName(&api.DisconnectRequest{})):
+		typedRequest := &api.DisconnectRequest{}
+		if err := anypb.UnmarshalTo(request, typedRequest, proto.UnmarshalOptions{}); err != nil {
+			return fmt.Errorf("failed to unmarshal disconnect request: %w", err)
+		}
+		s.handleDisconnect(typedRequest.GetConnectionId())
+		response = &api.Empty{}
+	case "type.googleapis.com" + "/" + string(proto.MessageName(&api.RPCRequest{})):
+		typedRequest := &api.RPCRequest{}
+		if err := anypb.UnmarshalTo(request, typedRequest, proto.UnmarshalOptions{}); err != nil {
+			return fmt.Errorf("failed to unmarshal data request: %w", err)
+		}
+		response = s.handleData(typedRequest)
+	default:
+		return fmt.Errorf("unknown request typeUrl: %s", request.TypeUrl)
+	}
+
+	responseData, err := proto.Marshal(response)
+	if err != nil {
+		return fmt.Errorf("failed to marshal response: %w", err)
+	}
+
+	if err := w.Write(responseData); err != nil {
+		return fmt.Errorf("failed to write response: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Server) handleConnect() *api.ConnectResponse {
 	connID := uuid.New().String()
 	mmapFilename := filepath.Join(s.mmapFilePrefix + connID + ".mmap")
 
 	file, err := os.Create(mmapFilename)
 	if err != nil {
 		log.Printf("[Connection ID: %s] failed to create mmap file: %v\n", connID, err)
-		return "", "", fmt.Errorf("failed to create mmap file: %w", err)
+		return &api.ConnectResponse{Error: err.Error()}
 	}
 
 	if err := file.Truncate(mmapFileSize); err != nil {
 		log.Printf("[Connection ID: %s] failed to truncate mmap file: %v\n", connID, err)
 		file.Close()
-		return "", "", fmt.Errorf("failed to truncate mmap file: %w", err)
+		return &api.ConnectResponse{Error: err.Error()}
 	}
 
 	mmap, err := gommap.Map(file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
 	if err != nil {
 		log.Printf("[Connection ID: %s] failed to mmap file: %v\n", connID, err)
 		file.Close()
-		return "", "", fmt.Errorf("failed to mmap file: %w", err)
+		return &api.ConnectResponse{Error: err.Error()}
 	}
 
 	conn := &Connection{
@@ -164,7 +171,11 @@ func (s *Server) handleConnect() (string, string, error) {
 	}
 
 	s.connections.Store(connID, conn)
-	return connID, mmapFilename, nil
+
+	return &api.ConnectResponse{
+		ConnectionId: connID,
+		MmapFilename: mmapFilename,
+	}
 }
 
 func (s *Server) handleDisconnect(connID string) {
@@ -185,31 +196,49 @@ func (s *Server) handleDisconnect(connID string) {
 	s.connections.Delete(connID)
 }
 
-func (s *Server) RegisterImplStub(fullyQualifiedMethodName string, implStub interface{}) {
-	s.implsStubs.Store(fullyQualifiedMethodName, implStub)
+func (s *Server) RegisterHandler(methodName string, handler HandlerFunc) {
+	s.implsStubs.Store(methodName, handler)
 }
 
-func (s *Server) handleData(w *netstringconn.NetstringConn, conn *Connection, fullyQualifiedMethodName string, readLimit int) {
-	// we read data from the mmap file
-	data := conn.mmap[:readLimit]
+func (s *Server) handleData(req *api.RPCRequest) *api.RPCResponse {
+	response := &api.RPCResponse{
+		ConnectionId:             req.ConnectionId,
+		FullyQualifiedMethodName: req.FullyQualifiedMethodName,
+		Size:                     0,
+	}
 
-	implStubInterface, ok := s.implsStubs.Load(fullyQualifiedMethodName)
+	connInterface, ok := s.connections.Load(req.ConnectionId)
 	if !ok {
-		log.Printf("[Connection ID: %s] method not found: %s\n", conn.id, fullyQualifiedMethodName)
+		response.Error = fmt.Sprintf("connection not found: %s", req.ConnectionId)
+		log.Printf("[Connection ID: %s] %s\n", req.ConnectionId, response.Error)
+		return response
+	}
+	conn := connInterface.(*Connection)
+
+	handlerInterface, ok := s.implsStubs.Load(req.FullyQualifiedMethodName)
+	if !ok {
+		response.Error = fmt.Sprintf("method not found: %s", req.FullyQualifiedMethodName)
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.Error)
+		return response
 	}
 
-	implStub := implStubInterface.(func(in []byte) ([]byte, error))
-	out, err := implStub(data)
+	handler, ok := handlerInterface.(HandlerFunc)
+	if !ok {
+		response.Error = fmt.Sprintf("invalid handler for method: %s", req.FullyQualifiedMethodName)
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.Error)
+		return response
+	}
+
+	data := conn.mmap[:req.Size]
+	out, err := handler(context.Background(), data)
 	if err != nil {
-		log.Printf("[Connection ID: %s] failed to process data: %v\n", conn.id, err)
-		return
+		response.Error = fmt.Sprintf("handler error: %v", err)
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.Error)
+		return response
 	}
 
-	// we write data back to the mmap file
 	writeLimit := copy(conn.mmap[:len(out)], out)
-	// respond to the client
-	payload := fmt.Sprintf("DATA,%s,%s,%d", conn.id, fullyQualifiedMethodName, writeLimit)
-	if err := w.Write([]byte(payload)); err != nil {
-		log.Printf("[Connection ID: %s] failed to write response: %v\n", conn.id, err)
-	}
+	response.Size = uint64(writeLimit)
+
+	return response
 }

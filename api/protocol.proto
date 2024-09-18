@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package mmap_rpc;
+
+option go_package = "github.com/epk/mmap-rpc/api";
+
+// Service definition for mmap-rpc
+service MmapRPC {
+  rpc Connect(ConnectRequest) returns (ConnectResponse);
+  rpc Disconnect(DisconnectRequest) returns (Empty);
+  rpc RPC(RPCRequest) returns (RPCResponse);
+}
+
+// Empty message for when no response is needed
+message Empty {}
+
+// Connect messages
+message ConnectRequest {}
+
+message ConnectResponse {
+  // unique identifier for the connection
+  string connection_id = 1;
+  // path to the mmap file
+  string mmap_filename = 2;
+  // error message if the connection failed
+  string error = 3;
+}
+
+// Disconnect messages
+message DisconnectRequest {
+  // unique identifier for the connection
+  string connection_id = 1;
+}
+
+// RPC messages
+message RPCRequest {
+  // nique identifier for the connection
+  string connection_id = 1;
+  // fully qualified method name
+  string fully_qualified_method_name = 2;
+  // size of the data to read
+  uint64 size = 3;
+}
+
+message RPCResponse {
+  // connection_id is the unique identifier for the connection
+  string connection_id = 1;
+  // fully qualified method name
+  string fully_qualified_method_name = 2;
+  // size of the data to read
+  uint64 size = 3;
+  // error message if the RPC failed
+  string error = 4;
+}

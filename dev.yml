@@ -7,4 +7,3 @@ up:
       version: '1.23.1'
       tools:
         - github.com/golang/protobuf/protoc-gen-go@latest
-        - github.com/bufbuild/buf/cmd/buf@latest

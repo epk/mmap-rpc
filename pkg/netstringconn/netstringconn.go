@@ -21,21 +21,12 @@ func NewNetstringConn(conn net.Conn) *NetstringConn {
 }
 
 func (nc *NetstringConn) Read() ([]byte, error) {
-	read, err := netstring.Parse(nc.reader)
-	if err != nil {
-		return nil, err
-	}
-
-	return read, nil
+	return netstring.Parse(nc.reader)
 }
 
 func (nc *NetstringConn) Write(data []byte) error {
 	_, err := nc.conn.Write(netstring.Pack(data))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func (nc *NetstringConn) Close() error {

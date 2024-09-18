@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
-	"strings"
 
-	"github.com/epk/mmap-rpc/pkg/netstringconn"
 	"github.com/tysonmote/gommap"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	"github.com/epk/mmap-rpc/gen/api"
+	"github.com/epk/mmap-rpc/pkg/netstringconn"
 )
 
+// Client represents an RPC client using memory-mapped files for data transfer.
 type Client struct {
 	conn         *netstringconn.NetstringConn
 	connectionID string
@@ -20,6 +22,7 @@ type Client struct {
 	mmap         gommap.MMap
 }
 
+// NewClient creates a new Client instance and establishes a connection to the server.
 func NewClient(socketPath string) (*Client, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -31,27 +34,25 @@ func NewClient(socketPath string) (*Client, error) {
 	}, nil
 }
 
+// Connect initializes the connection with the server and sets up the memory-mapped file.
 func (c *Client) Connect() error {
-	err := c.conn.Write([]byte("CONNECT"))
-	if err != nil {
-		return fmt.Errorf("failed to write to server: %w", err)
+	connectRequest := &api.ConnectRequest{}
+	connectResponse := &api.ConnectResponse{}
+
+	if err := c.sendAndReceive(connectRequest, connectResponse); err != nil {
+		return fmt.Errorf("failed to connect: %w", err)
 	}
 
-	response, err := c.conn.Read()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
+	c.connectionID = connectResponse.ConnectionId
+	if err := c.setupMmap(connectResponse.MmapFilename); err != nil {
+		return fmt.Errorf("failed to setup mmap: %w", err)
 	}
+	return nil
+}
 
-	// Expected response format:
-	// CONNECTED,834ad25c-683b-452a-b47c-649b036ce826,/tmp/834ad25c-683b-452a-b47c-649b036ce826.mmap
-	parts := strings.Split(string(response), ",")
-	if len(parts) != 3 || parts[0] != "CONNECTED" {
-		return fmt.Errorf("invalid response: %s", response)
-	}
-
-	c.connectionID = parts[1]
-
-	file, err := os.OpenFile(parts[2], os.O_RDWR, 0)
+// setupMmap sets up the memory-mapped file for data transfer.
+func (c *Client) setupMmap(filename string) error {
+	file, err := os.OpenFile(filename, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("failed to open mmap file: %w", err)
 	}
@@ -68,46 +69,73 @@ func (c *Client) Connect() error {
 	return nil
 }
 
+// Close terminates the connection with the server and cleans up resources.
 func (c *Client) Close() error {
-	err := c.conn.Write([]byte("DISCONNECT" + "," + c.connectionID))
-	if err != nil {
-		return fmt.Errorf("failed to write to server: %w", err)
+	if c.mmapFile != nil {
+		if err := c.mmapFile.Close(); err != nil {
+			return fmt.Errorf("failed to close mmap file: %w", err)
+		}
 	}
 
-	c.conn.Close()
-	return nil
+	disconnectRequest := &api.DisconnectRequest{
+		ConnectionId: c.connectionID,
+	}
+	if err := c.sendRequest(disconnectRequest); err != nil {
+		return fmt.Errorf("failed to send disconnect request: %w", err)
+	}
+
+	return c.conn.Close()
 }
 
+// Invoke sends an RPC request to the server and receives the response.
 func (c *Client) Invoke(ctx context.Context, method string, in, out proto.Message) error {
 	inBytes, err := proto.Marshal(in)
 	if err != nil {
 		return fmt.Errorf("failed to marshal input: %w", err)
 	}
-	writeLimit := copy(c.mmap[0:], inBytes)
 
-	payload := fmt.Sprintf("DATA,%s,%s,%d", c.connectionID, method, writeLimit)
-	err = c.conn.Write([]byte(payload))
-	if err != nil {
-		return fmt.Errorf("failed to write to server: %w", err)
+	writeLimit := copy(c.mmap, inBytes)
+
+	rpcRequest := &api.RPCRequest{
+		ConnectionId:             c.connectionID,
+		FullyQualifiedMethodName: method,
+		Size:                     uint64(writeLimit),
+	}
+	rpcResponse := &api.RPCResponse{}
+
+	if err := c.sendAndReceive(rpcRequest, rpcResponse); err != nil {
+		return fmt.Errorf("failed to invoke method %s: %w", method, err)
 	}
 
-	response, err := c.conn.Read()
+	data := c.mmap[:rpcResponse.Size]
+	return proto.Unmarshal(data, out)
+}
+
+// sendAndReceive sends a request and receives a response.
+func (c *Client) sendAndReceive(req, resp proto.Message) error {
+	if err := c.sendRequest(req); err != nil {
+		return err
+	}
+
+	respbuf, err := c.conn.Read()
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
 	}
 
-	parts := strings.Split(string(response), ",")
-	if len(parts) != 4 || parts[0] != "DATA" || parts[1] != c.connectionID {
-		return fmt.Errorf("invalid response: %s", response)
+	return proto.Unmarshal(respbuf, resp)
+}
+
+// sendRequest converts the message to anypb and sends it to the server.
+func (c *Client) sendRequest(msg proto.Message) error {
+	any, err := anypb.New(msg)
+	if err != nil {
+		return fmt.Errorf("failed to create any: %w", err)
 	}
 
-	readLimit := parts[3]
-	readLimitInt, _ := strconv.Atoi(readLimit)
-	data := c.mmap[0:readLimitInt]
-
-	if err := proto.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("failed to unmarshal output: %w", err)
+	bytes, err := proto.Marshal(any)
+	if err != nil {
+		return fmt.Errorf("failed to marshal any: %w", err)
 	}
 
-	return nil
+	return c.conn.Write(bytes)
 }
