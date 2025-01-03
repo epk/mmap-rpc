@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"os"
 
@@ -90,17 +91,29 @@ func (c *Client) Close() error {
 
 // Invoke sends an RPC request to the server and receives the response.
 func (c *Client) Invoke(ctx context.Context, method string, in, out proto.Message) error {
-	inBytes, err := proto.Marshal(in)
+	if err := c.mmap.Lock(); err != nil {
+		return fmt.Errorf("failed to lock mmap: %w", err)
+	}
+	defer func() {
+		if err := c.mmap.Unlock(); err != nil {
+			log.Printf("[Connection ID: %s] failed to unlock mmap: %v\n", c.connectionID, err)
+		}
+
+		if err := c.mmap.Sync(gommap.MS_SYNC); err != nil {
+			log.Printf("[Connection ID: %s] failed to sync mmap: %v\n", c.connectionID, err)
+		}
+	}()
+
+	mo := proto.MarshalOptions{}
+	inBytes, err := mo.MarshalAppend(c.mmap[:0], in)
 	if err != nil {
 		return fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	writeLimit := copy(c.mmap, inBytes)
-
 	rpcRequest := api.RPCRequest_builder{
 		ConnectionId:             proto.String(c.connectionID),
 		FullyQualifiedMethodName: proto.String(method),
-		Size:                     proto.Uint64(uint64(writeLimit)),
+		Size:                     proto.Uint64(uint64(len(inBytes))),
 	}.Build()
 
 	rpcResponse := &api.RPCResponse{}

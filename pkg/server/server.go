@@ -21,7 +21,7 @@ import (
 	"github.com/epk/mmap-rpc/pkg/netstringconn"
 )
 
-type HandlerFunc func(ctx context.Context, data []byte) ([]byte, error)
+type HandlerFunc func(ctx context.Context, in []byte, out []byte) (int, error)
 
 type Connection struct {
 	id       string
@@ -232,6 +232,21 @@ func (s *Server) handleData(req *api.RPCRequest) *api.RPCResponse {
 	}
 	conn := connInterface.(*Connection)
 
+	if err := conn.mmap.Lock(); err != nil {
+		response.SetError(fmt.Sprintf("failed to lock mmap: %v", err))
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.GetError())
+		return response
+	}
+	defer func() {
+		if err := conn.mmap.Unlock(); err != nil {
+			log.Printf("[Connection ID: %s] failed to unlock mmap: %v\n", conn.id, err)
+		}
+
+		if err := conn.mmap.Sync(gommap.MS_SYNC); err != nil {
+			log.Printf("[Connection ID: %s] failed to flush mmap: %v\n", conn.id, err)
+		}
+	}()
+
 	handlerInterface, ok := s.implsStubs.Load(req.GetFullyQualifiedMethodName())
 	if !ok {
 		response.SetError(fmt.Sprintf("method not found: %s", req.GetFullyQualifiedMethodName()))
@@ -246,16 +261,14 @@ func (s *Server) handleData(req *api.RPCRequest) *api.RPCResponse {
 		return response
 	}
 
-	data := conn.mmap[:req.GetSize()]
-	out, err := handler(context.Background(), data)
+	inData := conn.mmap[:req.GetSize()]
+	written, err := handler(context.Background(), inData, conn.mmap)
 	if err != nil {
 		response.SetError(fmt.Sprintf("handler error: %v", err))
 		log.Printf("[Connection ID: %s] %s\n", conn.id, response.GetError())
 		return response
 	}
 
-	writeLimit := copy(conn.mmap[:len(out)], out)
-	response.SetSize(uint64(writeLimit))
-
+	response.SetSize(uint64(written))
 	return response
 }

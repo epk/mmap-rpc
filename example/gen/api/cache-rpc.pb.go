@@ -53,12 +53,12 @@ type MmapRPCCacheServer interface {
 
 // RegisterMmapRPCCacheServer registers the MmapRPCCacheServer with the given server.
 func RegisterMmapRPCCacheServer(s *server.Server, srv MmapRPCCacheServer) {
-	s.RegisterHandler(_Cache_Get_FullMethodName, func(ctx context.Context, data []byte) ([]byte, error) {
-		return handleRequest(ctx, data, srv.Get, &GetRequest{})
+	s.RegisterHandler(_Cache_Get_FullMethodName, func(ctx context.Context, in []byte, out []byte) (int, error) {
+		return handleRequest(ctx, in, out, srv.Get, &GetRequest{})
 	})
 
-	s.RegisterHandler(_Cache_Set_FullMethodName, func(ctx context.Context, data []byte) ([]byte, error) {
-		return handleRequest(ctx, data, srv.Set, &SetRequest{})
+	s.RegisterHandler(_Cache_Set_FullMethodName, func(ctx context.Context, in []byte, out []byte) (int, error) {
+		return handleRequest(ctx, in, out, srv.Set, &SetRequest{})
 	})
 
 }
@@ -67,15 +67,22 @@ func RegisterMmapRPCCacheServer(s *server.Server, srv MmapRPCCacheServer) {
 func handleRequest[Req, Resp proto.Message](
 	ctx context.Context,
 	data []byte,
+	outBuf []byte,
 	handler func(context.Context, Req) (Resp, error),
 	req Req,
-) ([]byte, error) {
+) (int, error) {
 	if err := proto.Unmarshal(data, req); err != nil {
-		return nil, err
+		return 0, err
 	}
 	resp, err := handler(ctx, req)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return proto.Marshal(resp)
+	// Marshal directly into the output buffer
+	mo := proto.MarshalOptions{}
+	outBuf, err = mo.MarshalAppend(outBuf[:0], resp)
+	if err != nil {
+		return 0, err
+	}
+	return len(outBuf), nil
 }
