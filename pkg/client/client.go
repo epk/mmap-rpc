@@ -43,8 +43,8 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
-	c.connectionID = connectResponse.ConnectionId
-	if err := c.setupMmap(connectResponse.MmapFilename); err != nil {
+	c.connectionID = connectResponse.GetConnectionId()
+	if err := c.setupMmap(connectResponse.GetMmapFilename()); err != nil {
 		return fmt.Errorf("failed to setup mmap: %w", err)
 	}
 	return nil
@@ -77,9 +77,10 @@ func (c *Client) Close() error {
 		}
 	}
 
-	disconnectRequest := &api.DisconnectRequest{
-		ConnectionId: c.connectionID,
-	}
+	disconnectRequest := api.DisconnectRequest_builder{
+		ConnectionId: proto.String(c.connectionID),
+	}.Build()
+
 	if err := c.sendRequest(disconnectRequest); err != nil {
 		return fmt.Errorf("failed to send disconnect request: %w", err)
 	}
@@ -96,18 +97,18 @@ func (c *Client) Invoke(ctx context.Context, method string, in, out proto.Messag
 
 	writeLimit := copy(c.mmap, inBytes)
 
-	rpcRequest := &api.RPCRequest{
-		ConnectionId:             c.connectionID,
-		FullyQualifiedMethodName: method,
-		Size:                     uint64(writeLimit),
-	}
-	rpcResponse := &api.RPCResponse{}
+	rpcRequest := api.RPCRequest_builder{
+		ConnectionId:             proto.String(c.connectionID),
+		FullyQualifiedMethodName: proto.String(method),
+		Size:                     proto.Uint64(uint64(writeLimit)),
+	}.Build()
 
+	rpcResponse := &api.RPCResponse{}
 	if err := c.sendAndReceive(rpcRequest, rpcResponse); err != nil {
 		return fmt.Errorf("failed to invoke method %s: %w", method, err)
 	}
 
-	data := c.mmap[:rpcResponse.Size]
+	data := c.mmap[:rpcResponse.GetSize()]
 	return proto.Unmarshal(data, out)
 }
 

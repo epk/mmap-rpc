@@ -1,8 +1,10 @@
-syntax = "proto3";
+edition = "2023";
 
 package mmap_rpc;
-
 option go_package = "github.com/epk/mmap-rpc/api";
+
+import "google/protobuf/go_features.proto";
+option features.(pb.go).api_level = API_OPAQUE;
 
 // Service definition for mmap-rpc
 service MmapRPC {

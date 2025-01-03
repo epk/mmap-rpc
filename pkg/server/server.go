@@ -148,20 +148,35 @@ func (s *Server) handleConnect() *api.ConnectResponse {
 	file, err := os.Create(mmapFilename)
 	if err != nil {
 		log.Printf("[Connection ID: %s] failed to create mmap file: %v\n", connID, err)
-		return &api.ConnectResponse{Error: err.Error()}
+
+		resp := api.ConnectResponse_builder{
+			Error: proto.String(err.Error()),
+		}.Build()
+
+		return resp
 	}
 
 	if err := file.Truncate(mmapFileSize); err != nil {
 		log.Printf("[Connection ID: %s] failed to truncate mmap file: %v\n", connID, err)
 		file.Close()
-		return &api.ConnectResponse{Error: err.Error()}
+
+		resp := api.ConnectResponse_builder{
+			Error: proto.String(err.Error()),
+		}.Build()
+
+		return resp
 	}
 
 	mmap, err := gommap.Map(file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
 	if err != nil {
 		log.Printf("[Connection ID: %s] failed to mmap file: %v\n", connID, err)
 		file.Close()
-		return &api.ConnectResponse{Error: err.Error()}
+
+		resp := api.ConnectResponse_builder{
+			Error: proto.String(err.Error()),
+		}.Build()
+
+		return resp
 	}
 
 	conn := &Connection{
@@ -172,10 +187,12 @@ func (s *Server) handleConnect() *api.ConnectResponse {
 
 	s.connections.Store(connID, conn)
 
-	return &api.ConnectResponse{
-		ConnectionId: connID,
-		MmapFilename: mmapFilename,
-	}
+	resp := api.ConnectResponse_builder{
+		ConnectionId: proto.String(connID),
+		MmapFilename: proto.String(mmapFilename),
+	}.Build()
+
+	return resp
 }
 
 func (s *Server) handleDisconnect(connID string) {
@@ -201,44 +218,44 @@ func (s *Server) RegisterHandler(methodName string, handler HandlerFunc) {
 }
 
 func (s *Server) handleData(req *api.RPCRequest) *api.RPCResponse {
-	response := &api.RPCResponse{
-		ConnectionId:             req.ConnectionId,
-		FullyQualifiedMethodName: req.FullyQualifiedMethodName,
-		Size:                     0,
-	}
+	response := api.RPCResponse_builder{
+		ConnectionId:             proto.String(req.GetConnectionId()),
+		FullyQualifiedMethodName: proto.String(req.GetFullyQualifiedMethodName()),
+		Size:                     proto.Uint64(0),
+	}.Build()
 
-	connInterface, ok := s.connections.Load(req.ConnectionId)
+	connInterface, ok := s.connections.Load(req.GetConnectionId())
 	if !ok {
-		response.Error = fmt.Sprintf("connection not found: %s", req.ConnectionId)
-		log.Printf("[Connection ID: %s] %s\n", req.ConnectionId, response.Error)
+		response.SetError(fmt.Sprintf("connection not found: %s", req.GetConnectionId()))
+		log.Printf("[Connection ID: %s] %s\n", req.GetConnectionId(), response.GetError())
 		return response
 	}
 	conn := connInterface.(*Connection)
 
-	handlerInterface, ok := s.implsStubs.Load(req.FullyQualifiedMethodName)
+	handlerInterface, ok := s.implsStubs.Load(req.GetFullyQualifiedMethodName())
 	if !ok {
-		response.Error = fmt.Sprintf("method not found: %s", req.FullyQualifiedMethodName)
-		log.Printf("[Connection ID: %s] %s\n", conn.id, response.Error)
+		response.SetError(fmt.Sprintf("method not found: %s", req.GetFullyQualifiedMethodName()))
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.GetError())
 		return response
 	}
 
 	handler, ok := handlerInterface.(HandlerFunc)
 	if !ok {
-		response.Error = fmt.Sprintf("invalid handler for method: %s", req.FullyQualifiedMethodName)
-		log.Printf("[Connection ID: %s] %s\n", conn.id, response.Error)
+		response.SetError(fmt.Sprintf("invalid handler for method: %s", req.GetFullyQualifiedMethodName()))
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.GetError())
 		return response
 	}
 
-	data := conn.mmap[:req.Size]
+	data := conn.mmap[:req.GetSize()]
 	out, err := handler(context.Background(), data)
 	if err != nil {
-		response.Error = fmt.Sprintf("handler error: %v", err)
-		log.Printf("[Connection ID: %s] %s\n", conn.id, response.Error)
+		response.SetError(fmt.Sprintf("handler error: %v", err))
+		log.Printf("[Connection ID: %s] %s\n", conn.id, response.GetError())
 		return response
 	}
 
 	writeLimit := copy(conn.mmap[:len(out)], out)
-	response.Size = uint64(writeLimit)
+	response.SetSize(uint64(writeLimit))
 
 	return response
 }

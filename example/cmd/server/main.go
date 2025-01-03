@@ -8,6 +8,7 @@ import (
 
 	cache "github.com/epk/mmap-rpc/example/gen/api"
 	"github.com/epk/mmap-rpc/pkg/server"
+	"google.golang.org/protobuf/proto"
 )
 
 var value = "😄😄😄😄😄😄😄😄😄😄😄😄😄😄😄😄"
@@ -35,18 +36,23 @@ type stub struct {
 }
 
 func (s *stub) Get(ctx context.Context, in *cache.GetRequest) (*cache.GetResponse, error) {
-	fmt.Println("[server] Get request for key:", in.Key)
+	fmt.Println("[server] Get request for key:", in.GetKey())
 
-	return &cache.GetResponse{
-		Value: value,
-		Found: true,
-	}, nil
+	resp := cache.GetResponse_builder{
+		Value: proto.String(value),
+		Found: proto.Bool(true),
+	}.Build()
+
+	return resp, nil
 }
 func (s *stub) Set(ctx context.Context, in *cache.SetRequest) (*cache.SetResponse, error) {
-	fmt.Println("[server] Set request for key:", in.Key, "value:", in.Value)
+	fmt.Println("[server] Set request for key:", in.GetKey(), "value:", in.GetValue())
 
-	value = in.Value
-	return &cache.SetResponse{
-		Success: true,
-	}, nil
+	value = in.GetValue()
+
+	resp := cache.SetResponse_builder{
+		Success: proto.Bool(true),
+	}.Build()
+
+	return resp, nil
 }

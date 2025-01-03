@@ -10,7 +10,7 @@ github.com/kyrylo/netstring v1.0.0 h1:hCh79LM19bpuXd1J4cUdsN5jRmY2X/4wlShnG/miMK
 github.com/kyrylo/netstring v1.0.0/go.mod h1:r6LkOpLNji7mxlyn7Ygjtryto3C6KPGMV51mlvGf06g=
 github.com/tysonmote/gommap v0.0.3 h1:/TgH30oyoBKMHQu+RsbDVjgHxA6R/aARv055Z36Li88=
 github.com/tysonmote/gommap v0.0.3/go.mod h1:XsS5iBGqoNFLB6QPtF8ZKx7SHFi3Gx+QgzExGyXJ9MA=
-google.golang.org/protobuf v1.34.2 h1:6xV6lTsCfpGD21XK49h7MhtcApnLqkfYgPcdHftf6hg=
-google.golang.org/protobuf v1.34.2/go.mod h1:qYOHts0dSfpeUzUFpOMr/WGzszTmLH+DiWniOlNbLDw=
+google.golang.org/protobuf v1.36.1 h1:yBPeRvTftaleIgM3PZ/WBIZ7XM/eEYAaEyCwvyjq/gk=
+google.golang.org/protobuf v1.36.1/go.mod h1:9fA7Ob0pmnwhb644+1+CVWFRbNajQ6iRojtC/QF5bRE=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
