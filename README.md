@@ -49,11 +49,6 @@ It is a simple, efficient, and easy-to-parse format that allows for variable-len
 
 The reference client and server implementations in `pkg/client` and `pkg/server` provide a pluggable interface for the client and server stubs to use. These implementations handle the low-level details of the mmap-rpc protocol, including the use of memory-mapped files for data transfer and netstring encoding/decoding.
 
-
-#### Codegen
-
-Not yet implemented, but the reference output can be found in `gen/cache/cache_mmap-rpc.pb.go`. This code plugs into the client and server client libraries to abstract the protocol details from the user and provide a clean interface for making RPC calls (just like gRPC, twirp, etc.).
-
 #### Example
 
-Example usage of the client and server can be found in `cmd/client` and `cmd/server`.
+A fully working example can be found in `example/`.

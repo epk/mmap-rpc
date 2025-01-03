@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/epk/mmap-rpc/gen/cache"
+	cache "github.com/epk/mmap-rpc/example/gen/api"
 	"github.com/epk/mmap-rpc/pkg/server"
 )
 

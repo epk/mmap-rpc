@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cache;
 
-option go_package = "github.com/epk/mmap-rpc/gen/cache";
+option go_package = "github.com/epk/mmap-rpc/example/gen/api";
 
 // The Cache service definition.
 service Cache {

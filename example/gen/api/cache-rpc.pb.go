@@ -1,10 +1,8 @@
-package cache
+package api
 
 import (
 	context "context"
-
 	"google.golang.org/protobuf/proto"
-
 	"github.com/epk/mmap-rpc/pkg/client"
 	"github.com/epk/mmap-rpc/pkg/server"
 )
@@ -62,6 +60,7 @@ func RegisterMmapRPCCacheServer(s *server.Server, srv MmapRPCCacheServer) {
 	s.RegisterHandler(_Cache_Set_FullMethodName, func(ctx context.Context, data []byte) ([]byte, error) {
 		return handleRequest(ctx, data, srv.Set, &SetRequest{})
 	})
+
 }
 
 // handleRequest is a helper function to reduce code duplication in RegisterMmapRPCCacheServer
