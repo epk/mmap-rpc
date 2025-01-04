@@ -37,7 +37,7 @@ type Server struct {
 	implsStubs sync.Map
 }
 
-var mmapFileSize int64 = 1 * 1024 * 1024 // 1MB
+var mmapFileSize int64 = 8 * 1024 * 1024 // 8MB
 
 func (s *Server) ListenAndServe(socketPath, mmapFilePrefix string) error {
 	s.mmapFilePrefix = mmapFilePrefix

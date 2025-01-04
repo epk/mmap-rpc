@@ -10,15 +10,12 @@ import (
 )
 
 func main() {
-	c, err := client.NewClient("/tmp/mmap/server.sock")
+	c, err := client.NewClient("/tmp/mmap/server.sock", client.DefaultClientOptions)
 	if err != nil {
 		panic(err)
 	}
 	defer c.Close()
 
-	if err := c.Connect(); err != nil {
-		panic(err)
-	}
 	cc := cache.NewMmapRPCCacheClient(c)
 
 	r, err := cc.Get(context.Background(), cache.GetRequest_builder{Key: proto.String("foo")}.Build())

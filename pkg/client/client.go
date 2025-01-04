@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/tysonmote/gommap"
 	"google.golang.org/protobuf/proto"
@@ -15,28 +17,78 @@ import (
 	"github.com/epk/mmap-rpc/pkg/netstringconn"
 )
 
-// Client represents an RPC client using memory-mapped files for data transfer.
+// Client represents an RPC client with a pool of connections
 type Client struct {
+	socketPath string
+	pool       chan *connection
+	mu         sync.Mutex
+}
+
+// connection represents a single RPC connection
+type connection struct {
 	conn         *netstringconn.NetstringConn
 	connectionID string
 	mmapFile     *os.File
 	mmap         gommap.MMap
+	inUse        bool
 }
 
-// NewClient creates a new Client instance and establishes a connection to the server.
-func NewClient(socketPath string) (*Client, error) {
-	conn, err := net.Dial("unix", socketPath)
+// ClientOptions contains configuration for the client
+type ClientOptions struct {
+	PoolSize    int
+	DialTimeout time.Duration
+}
+
+// DefaultClientOptions provides sensible defaults
+var DefaultClientOptions = ClientOptions{
+	PoolSize:    32,
+	DialTimeout: time.Second,
+}
+
+// NewClient creates a new Client instance with a connection pool
+func NewClient(socketPath string, opts ClientOptions) (*Client, error) {
+	client := &Client{
+		socketPath: socketPath,
+		pool:       make(chan *connection, opts.PoolSize),
+	}
+
+	// Initialize the connection pool
+	for i := 0; i < opts.PoolSize; i++ {
+		conn, err := client.createConnection(opts.DialTimeout)
+		if err != nil {
+			// Clean up any connections we've already created
+			client.Close()
+			return nil, fmt.Errorf("failed to initialize connection pool: %w", err)
+		}
+		client.pool <- conn
+	}
+
+	return client, nil
+}
+
+// createConnection establishes a new connection to the server
+func (c *Client) createConnection(timeout time.Duration) (*connection, error) {
+	// Use net.DialTimeout for unix socket
+	conn, err := net.DialTimeout("unix", c.socketPath, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server: %w", err)
 	}
 
-	return &Client{
-		conn: netstringconn.NewNetstringConn(conn),
-	}, nil
+	nsConn := netstringconn.NewNetstringConn(conn)
+	connection := &connection{
+		conn: nsConn,
+	}
+
+	if err := connection.connect(); err != nil {
+		nsConn.Close()
+		return nil, err
+	}
+
+	return connection, nil
 }
 
-// Connect initializes the connection with the server and sets up the memory-mapped file.
-func (c *Client) Connect() error {
+// connect initializes the connection with the server and sets up the memory-mapped file
+func (c *connection) connect() error {
 	connectRequest := &api.ConnectRequest{}
 	connectResponse := &api.ConnectResponse{}
 
@@ -51,8 +103,8 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-// setupMmap sets up the memory-mapped file for data transfer.
-func (c *Client) setupMmap(filename string) error {
+// setupMmap sets up the memory-mapped file for data transfer
+func (c *connection) setupMmap(filename string) error {
 	file, err := os.OpenFile(filename, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("failed to open mmap file: %w", err)
@@ -70,11 +122,37 @@ func (c *Client) setupMmap(filename string) error {
 	return nil
 }
 
-// Close terminates the connection with the server and cleans up resources.
+// Close closes all connections in the pool
 func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var lastErr error
+	// Close all connections in the pool
+	for {
+		select {
+		case conn := <-c.pool:
+			if err := conn.close(); err != nil && lastErr == nil {
+				lastErr = err
+			}
+		default:
+			close(c.pool)
+			return lastErr
+		}
+	}
+}
+
+// close terminates a single connection and cleans up resources
+func (c *connection) close() error {
+	var closeErr error
+
 	if c.mmapFile != nil {
+		if err := c.mmap.Sync(gommap.MS_SYNC); err != nil {
+			log.Printf("[Connection ID: %s] failed to sync mmap: %v\n", c.connectionID, err)
+		}
+
 		if err := c.mmapFile.Close(); err != nil {
-			return fmt.Errorf("failed to close mmap file: %w", err)
+			closeErr = fmt.Errorf("failed to close mmap file: %w", err)
 		}
 	}
 
@@ -83,50 +161,62 @@ func (c *Client) Close() error {
 	}.Build()
 
 	if err := c.sendRequest(disconnectRequest); err != nil {
-		return fmt.Errorf("failed to send disconnect request: %w", err)
+		if closeErr != nil {
+			closeErr = fmt.Errorf("%v; failed to send disconnect request: %w", closeErr, err)
+		} else {
+			closeErr = fmt.Errorf("failed to send disconnect request: %w", err)
+		}
 	}
 
-	return c.conn.Close()
+	if err := c.conn.Close(); err != nil {
+		if closeErr != nil {
+			closeErr = fmt.Errorf("%v; failed to close connection: %w", closeErr, err)
+		} else {
+			closeErr = fmt.Errorf("failed to close connection: %w", err)
+		}
+	}
+
+	return closeErr
 }
 
-// Invoke sends an RPC request to the server and receives the response.
+// Invoke sends an RPC request to the server and receives the response
 func (c *Client) Invoke(ctx context.Context, method string, in, out proto.Message) error {
-	if err := c.mmap.Lock(); err != nil {
-		return fmt.Errorf("failed to lock mmap: %w", err)
-	}
+	// Get a connection from the pool
+	conn := <-c.pool
 	defer func() {
-		if err := c.mmap.Unlock(); err != nil {
-			log.Printf("[Connection ID: %s] failed to unlock mmap: %v\n", c.connectionID, err)
-		}
-
-		if err := c.mmap.Sync(gommap.MS_SYNC); err != nil {
-			log.Printf("[Connection ID: %s] failed to sync mmap: %v\n", c.connectionID, err)
-		}
+		// Return the connection to the pool
+		c.pool <- conn
 	}()
 
+	// Lock the mmap for this operation
+	if err := conn.mmap.Lock(); err != nil {
+		return fmt.Errorf("failed to lock mmap: %w", err)
+	}
+	defer conn.mmap.Unlock()
+
 	mo := proto.MarshalOptions{}
-	inBytes, err := mo.MarshalAppend(c.mmap[:0], in)
+	inBytes, err := mo.MarshalAppend(conn.mmap[:0], in)
 	if err != nil {
 		return fmt.Errorf("failed to marshal input: %w", err)
 	}
 
 	rpcRequest := api.RPCRequest_builder{
-		ConnectionId:             proto.String(c.connectionID),
+		ConnectionId:             proto.String(conn.connectionID),
 		FullyQualifiedMethodName: proto.String(method),
 		Size:                     proto.Uint64(uint64(len(inBytes))),
 	}.Build()
 
 	rpcResponse := &api.RPCResponse{}
-	if err := c.sendAndReceive(rpcRequest, rpcResponse); err != nil {
+	if err := conn.sendAndReceive(rpcRequest, rpcResponse); err != nil {
 		return fmt.Errorf("failed to invoke method %s: %w", method, err)
 	}
 
-	data := c.mmap[:rpcResponse.GetSize()]
+	data := conn.mmap[:rpcResponse.GetSize()]
 	return proto.Unmarshal(data, out)
 }
 
-// sendAndReceive sends a request and receives a response.
-func (c *Client) sendAndReceive(req, resp proto.Message) error {
+// sendAndReceive sends a request and receives a response
+func (c *connection) sendAndReceive(req, resp proto.Message) error {
 	if err := c.sendRequest(req); err != nil {
 		return err
 	}
@@ -139,8 +229,8 @@ func (c *Client) sendAndReceive(req, resp proto.Message) error {
 	return proto.Unmarshal(respbuf, resp)
 }
 
-// sendRequest converts the message to anypb and sends it to the server.
-func (c *Client) sendRequest(msg proto.Message) error {
+// sendRequest converts the message to anypb and sends it to the server
+func (c *connection) sendRequest(msg proto.Message) error {
 	any, err := anypb.New(msg)
 	if err != nil {
 		return fmt.Errorf("failed to create any: %w", err)
