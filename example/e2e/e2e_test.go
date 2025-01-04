@@ -31,6 +31,8 @@ func Test_E2E(t *testing.T) {
 		}
 	}()
 
+	time.Sleep(1 * time.Second)
+
 	c, err := client.NewClient(sockPath, client.DefaultClientOptions)
 	if err != nil {
 		t.Fatal(err, "failed to create client")
