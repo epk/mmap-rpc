@@ -1,0 +1,36 @@
+name: Go
+
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install omni
+        uses: omnicli/setup-action@v0
+        with:
+          up: true
+          # Only cache when running on the main branch
+          cache_write: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: generate code
+        run: omni generate
+
+      - name: make sure the generated code is up to date
+        run: git diff --exit-code
+
+      - name: install generator
+        run: omni install
+
+      - name: generate
+        run: omni generate
+
+      - name: make sure the generated code is up to date
+        run: git diff --exit-code
+
+      - name: Test e2e
+        run: omni test-example

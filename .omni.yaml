@@ -1,0 +1,16 @@
+up:
+  - go:
+      version_file: go.mod
+  - go-install: google.golang.org/protobuf/cmd/protoc-gen-go
+  - go-install: github.com/bufbuild/buf/cmd/buf
+
+commands:
+  generate:
+    run: buf generate
+  install:
+    run: go install ./cmd/...
+
+  generate-example:
+    run: cd example && buf generate
+  test-example:
+    run: go test -v ./example/...

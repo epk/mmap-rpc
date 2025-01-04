@@ -1,7 +1,7 @@
 edition = "2023";
 
 package mmap_rpc;
-option go_package = "github.com/epk/mmap-rpc/api";
+option go_package = "github.com/epk/mmap-rpc/gen/api";
 
 import "google/protobuf/go_features.proto";
 option features.(pb.go).api_level = API_OPAQUE;
