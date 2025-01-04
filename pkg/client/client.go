@@ -41,7 +41,7 @@ type ClientOptions struct {
 
 // DefaultClientOptions provides sensible defaults
 var DefaultClientOptions = ClientOptions{
-	PoolSize:    32,
+	PoolSize:    64,
 	DialTimeout: time.Second,
 }
 
